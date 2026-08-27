@@ -29,10 +29,20 @@ spec:
   timeout: 5m
   path: ./apps/hello2
   # The root GitRepository Terraform created: this repository, at the branch
-  # the cluster was bootstrapped from.
+  # the cluster was bootstrapped from. Named "flux-system" on both installs —
+  # the Helm release is called that, and Azure names the object after the Flux
+  # configuration, which modules/fluxcd-aks therefore also calls that.
   sourceRef:
     kind: GitRepository
     name: flux-system
+  # Deploy as the applier account rather than as the controller. On AKS the
+  # extension's multi-tenancy expects exactly this; elsewhere modules/fluxcd
+  # creates the same account so the two clusters behave the same way.
+  #
+  # Written out rather than substituted: this file is applied by the root
+  # Kustomization, which has no postBuild of its own, so nothing would resolve
+  # a ${VARIABLE} here. CI checks it against the platform contract instead.
+  serviceAccountName: flux-applier
   # Garbage collection: an object dropped from apps/hello2 is deleted from the
   # cluster rather than left behind, which is the same promise Argo CD's
   # "prune: true" makes on the other side.

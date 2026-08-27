@@ -152,6 +152,20 @@ for cloud in clusters:
                   f"{name} does not prune. An object dropped from {spec['path']} "
                   "would be left running on the cluster with nothing tracking it.")
 
+        # Under the AKS extension's multi-tenancy the controllers deploy by
+        # impersonating this account rather than as themselves, and a
+        # Kustomization that names none is refused. modules/fluxcd creates an
+        # account of the same name on the other clouds, so the literal here has
+        # to match what the platform contract says both installs provide.
+        applier = variables.get("FLUX_APPLIER")
+        if spec.get("serviceAccountName") != applier:
+            error(where,
+                  f"{name} deploys as {spec.get('serviceAccountName')!r}, but the "
+                  f"platform provides {applier!r}. Nothing substitutes variables "
+                  "into a cluster overlay — the root Kustomization has no "
+                  "postBuild — so this one is written out, and this check is what "
+                  "keeps it honest.")
+
         if spec.get("sourceRef", {}).get("name") != "flux-system":
             error(where,
                   f"{name} reads source {spec.get('sourceRef', {}).get('name')!r}, "
@@ -176,12 +190,36 @@ for cloud in clusters:
         for doc in docs:
             kind = doc["kind"]
             namespace = doc["metadata"].get("namespace")
-            if namespace != variables["TENANT"]:
+
+            # Multi-tenancy, as the AKS Flux extension enforces it: every Flux
+            # object of an application sits in the namespace its configuration
+            # does. A HelmRelease in the tenant's namespace is refused there —
+            # no applier account exists in it — so this is not a preference
+            # that only bites on Azure, it is the shape both installs run.
+            if namespace != variables["FLUX_NAMESPACE"]:
                 error(f"{app_dir}/{kind.lower()}.yaml",
-                      f"{kind} {doc['metadata']['name']} lands in namespace "
-                      f"{namespace!r}, not in the tenant's ({variables['TENANT']}). "
-                      "Only the tenant's namespace has the quota, the "
-                      "NetworkPolicy and the SecretStore this application needs.")
+                      f"{kind} {doc['metadata']['name']} is in namespace "
+                      f"{namespace!r}; Flux's objects belong in "
+                      f"{variables['FLUX_NAMESPACE']!r}. The workload goes to the "
+                      "tenant's namespace through the HelmRelease's "
+                      "targetNamespace, not by moving the objects that deploy it.")
+
+            # ...and the other half of the same rule: a source referenced across
+            # namespaces is blocked, and the symptom is a HelmRelease that never
+            # becomes ready.
+            for ref_holder, ref in (
+                ("spec", doc["spec"].get("sourceRef")),
+                ("spec.chart.spec", doc["spec"].get("chart", {}).get("spec", {}).get("sourceRef")),
+            ):
+                if not ref:
+                    continue
+                ref_ns = ref.get("namespace")
+                if ref_ns and ref_ns != namespace:
+                    error(f"{app_dir}/{kind.lower()}.yaml",
+                          f"{kind} {doc['metadata']['name']} references a source in "
+                          f"{ref_ns!r} from {namespace!r} ({ref_holder}.sourceRef). "
+                          "Cross-namespace source references are blocked under "
+                          "multi-tenancy; keep an application's source beside it.")
 
             if kind == "GitRepository":
                 commit = doc["spec"].get("ref", {}).get("commit", "")
@@ -193,7 +231,24 @@ for cloud in clusters:
                           "the one thing pinning a release is for.")
 
             if kind == "HelmRelease":
-                values = doc["spec"].get("values", {})
+                spec_hr = doc["spec"]
+                values = spec_hr.get("values", {})
+
+                if spec_hr.get("targetNamespace") != variables["TENANT"]:
+                    error(f"{app_dir}/helmrelease.yaml",
+                          f"{doc['metadata']['name']} installs into "
+                          f"{spec_hr.get('targetNamespace')!r}, not the tenant's "
+                          f"namespace ({variables['TENANT']}). Only that namespace "
+                          "has the quota, the NetworkPolicy and the SecretStore "
+                          "this application needs.")
+
+                if spec_hr.get("serviceAccountName") != variables["FLUX_APPLIER"]:
+                    error(f"{app_dir}/helmrelease.yaml",
+                          f"{doc['metadata']['name']} deploys as "
+                          f"{spec_hr.get('serviceAccountName')!r}; the platform "
+                          f"provides {variables['FLUX_APPLIER']!r}. Without it the "
+                          "helm-controller has no identity in the tenant's "
+                          "namespace under multi-tenancy.")
                 host = values.get("ingress", {}).get("host", "")
                 wanted = f"{cloud}-{doc['metadata']['name']}.{variables['DOMAIN']}"
                 if host != wanted:
@@ -217,8 +272,9 @@ for cloud in clusters:
                           f"{values.get('tenant')!r} but deployed into "
                           f"{variables['TENANT']!r}.")
 
-                print(f"  {doc['metadata']['name']:10} host={host} "
-                      f"tag={tag} namespace={namespace}")
+                print(f"  {doc['metadata']['name']:10} host={host} tag={tag} "
+                      f"in={namespace} -> {spec_hr.get('targetNamespace')} "
+                      f"as {spec_hr.get('serviceAccountName')}")
 
 # One shared definition is the claim this repository makes about itself; the
 # cheapest way for it to stop being true is a second copy of apps/hello2 that

@@ -15,7 +15,12 @@ apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
 metadata:
   name: hello2-chart
-  namespace: ${TENANT}
+  # Flux's own namespace, NOT the tenant's — that is the multi-tenancy rule the
+  # AKS Flux extension enforces (and the community install honours): every Flux
+  # object of an application lives in the namespace its configuration does, and
+  # no sourceRef crosses a namespace. The workload still lands in the tenant's
+  # namespace; see the HelmRelease's targetNamespace.
+  namespace: ${FLUX_NAMESPACE}
   labels:
     app.kubernetes.io/part-of: onek8s
     app.kubernetes.io/name: hello2

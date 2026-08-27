@@ -27,7 +27,7 @@ Both planes deploy the *same chart* (`apps/hello/chart` in OneK8s-hello) to the
 | Per-cluster values | Helm parameters rendered by the platform chart on the hub. | `${VARIABLE}` substitution at reconcile time, from `cluster-vars` (written by Terraform) and the cluster's own release ConfigMap. |
 | What runs where | Kargo: a `Warehouse` freezes each build as Freight, staging takes it automatically, production takes only what staging ran, when a person promotes. | A pull request editing `clusters/<cloud>/hello2-release.yaml`. No Warehouse, no Freight, no policy. |
 | Blast radius of the delivery plane failing | The hub is a single point of delivery for every cluster. | One cluster stops reconciling; the other never notices. |
-| Tenant boundary | `AppProject`: allowed repositories, one namespace, no cluster-scoped resources. | The controllers run cluster-wide (see [Known gaps](#known-gaps)). |
+| Tenant boundary | `AppProject`: allowed repositories, one namespace, no cluster-scoped resources. | Multi-tenancy is enforced — Flux objects stay in one namespace, deployment happens as `flux-applier` — but that account has full access (see [Known gaps](#known-gaps)). |
 | Cost of "deploy this everywhere" | One commit. | One commit per cluster. |
 
 The visible half of the experiment is two URLs per cluster:
@@ -46,7 +46,8 @@ Same application, same page, different delivery plane and different tenant. The
 apps/
 └── hello2/                     ONE definition, reconciled by both clusters
     ├── gitrepository.yaml        the chart's source: OneK8s-hello, at a commit
-    ├── helmrelease.yaml          the release, with every per-cluster value as ${VAR}
+    ├── helmrelease.yaml          the release: every per-cluster value as ${VAR},
+    │                             deployed into ${TENANT} as ${FLUX_APPLIER}
     └── kustomization.yaml
 clusters/
 ├── azure/                      what the AKS cluster runs...
@@ -63,21 +64,48 @@ a file under `clusters/`.
 
 ## How a cluster gets here
 
-Terraform, in the OneK8s repository (`modules/fluxcd`, used by
-`foundations/azure` and `foundations/aws`), does exactly three things per
-cluster and then gets out of the way:
+Terraform, in the OneK8s repository, and **not the same way on every cluster**.
+AKS is what the real environments run, so Flux there is the Azure-managed
+`microsoft.flux` extension — Azure owns the manifests, the upgrades and the
+patching, exactly as it does for the Argo CD extension. The other clouds
+install the same delivery plane from the community chart, and are where the
+platform proves it is not tied to Azure.
 
 ```
-modules/fluxcd
-  ├── Helm release  flux             the controllers (the flux2 chart)
-  ├── ConfigMap     cluster-vars     the cluster's own facts (platform-contract.yaml)
-  └── Helm release  flux-system      GitRepository → this repository
-                                     Kustomization → ./clusters/<cloud>
+AKS            modules/fluxcd-aks           EKS (and GKE/OKE)  modules/fluxcd
+  extension  microsoft.flux                   Helm release  flux (flux2 chart)
+                                              ServiceAccount flux-applier
+                                                             (+ cluster-admin)
+  ConfigMap  cluster-vars   ◀── the same module, so one contract ──▶  cluster-vars
+  fluxConfiguration                           Helm release  flux-system
+    GitRepository flux-system                   GitRepository flux-system
+    Kustomization → ./clusters/azure            Kustomization → ./clusters/aws
 ```
 
-That is the whole bootstrap. It is the counterpart of the single Argo CD root
-`Application` that `gitops/root-app.tf` plants on the hub — and, like it, after
-the first apply everything is Git.
+Both produce the same two objects under the same names, which is what lets one
+directory here serve both. That is the whole bootstrap, and it is the
+counterpart of the single Argo CD root `Application` that `gitops/root-app.tf`
+plants on the hub — after the first apply, everything is Git.
+
+### Why the objects are laid out the way they are
+
+The AKS extension enforces Flux's **multi-tenancy** by default, and this
+repository is written for it rather than opting out:
+
+- **Every Flux object of an application lives in `flux-system`** — its
+  `GitRepository`, its `Kustomization`, its `HelmRelease` — because a
+  `HelmRelease` in the tenant's namespace would be refused there (no applier
+  account exists in it) and its `sourceRef` would be crossing a namespace
+  besides.
+- **The workload still lands in the tenant's namespace**, through the
+  `HelmRelease`'s `targetNamespace`.
+- **Everything deploys as `flux-applier`**, the ServiceAccount the extension
+  creates and impersonates. `modules/fluxcd` creates one of the same name on
+  the other clouds, so `serviceAccountName: flux-applier` means the same thing
+  on either install.
+
+None of that costs the community-chart install anything, which is why it is the
+shape everywhere rather than an Azure special case.
 
 ## Making a release
 
@@ -100,8 +128,9 @@ staging has already run.
 ## Onboarding another application
 
 1. `apps/<name>/` — a `GitRepository` (or `HelmRepository`/`OCIRepository`) and
-   a `HelmRelease`, with every per-cluster value written as `${VARIABLE}` and
-   nothing naming a cloud.
+   a `HelmRelease`, both in `${FLUX_NAMESPACE}`, with the workload placed by
+   `targetNamespace: ${TENANT}`, deploying as `${FLUX_APPLIER}`, every
+   per-cluster value written as a `${VARIABLE}`, and nothing naming a cloud.
 2. `clusters/<cloud>/<name>-release.yaml` — what that cluster runs.
 3. `clusters/<cloud>/<name>.yaml` — a `Kustomization` for `./apps/<name>`,
    substituting from `cluster-vars` and `<name>-release`.
@@ -127,29 +156,36 @@ It fails on:
 - a `substituteFrom` naming a ConfigMap that neither Terraform writes nor the
   overlay applies;
 - a Kustomization that does not prune, or reads a source that does not exist;
-- an object landing outside the tenant's namespace;
+- a Flux object outside `flux-system`, or a `sourceRef` crossing a namespace —
+  both refused under the AKS extension's multi-tenancy;
+- a `HelmRelease` whose `targetNamespace` is not the tenant's, or that deploys
+  as an account the platform does not provide;
 - a host that is not `<cloud>-<app>.<domain>`;
 - a moving image tag, or a chart pinned to a branch instead of a commit;
 - anything under `apps/` naming a cloud.
 
 ## Known gaps
 
-- **The controllers run privileged.** The `flux2` chart's multi-tenancy
-  lockdown is off, so `kustomize-controller` and `helm-controller` hold
-  `cluster-admin`: anything committed here can do anything to the cluster.
-  Argo CD's side of the comparison has a real boundary (an `AppProject`
-  allowing two repositories, one namespace and no cluster-scoped resources).
-  Closing it means `spec.serviceAccountName` on every Kustomization plus a
-  tenant ServiceAccount with deploy rights in its own namespace, which the
-  tenants stack does not grant today.
-- **No notifications.** `notification-controller` is not installed
-  (`enable_notifications = false` in `modules/fluxcd`): without an `Alert` and
-  a `Provider` it reconciles nothing, so a failed reconcile is visible only to
-  somebody running `flux get` either way. Turning it on is the first thing to
-  do if this plane ever carries something that matters.
+- **The applier has full access.** Multi-tenancy is enforced, so nothing
+  deploys as a controller — but the account it deploys as, `flux-applier`, is
+  cluster-scoped (Azure's own word for that scope is *full access*), because
+  one configuration in `flux-system` has to reach a tenant's namespace.
+  Anything committed here can therefore still do anything to the cluster, where
+  Argo CD's side has a real boundary in its `AppProject`. The shape that closes
+  it is now one step away rather than a redesign: a **namespace-scoped**
+  configuration per tenant — Flux objects in the tenant's own namespace, an
+  applier bound only there — which also needs a tenant ServiceAccount with
+  deploy rights that the tenants stack does not grant today.
+- **No notifications configured.** The AKS extension installs
+  `notification-controller` (it is not optional there) and the community chart
+  is told not to (`enable_notifications = false`), but neither cluster has an
+  `Alert` or a `Provider` — so a failed reconcile is visible only to somebody
+  running `flux get`. Configuring one is the first thing to do if this plane
+  ever carries something that matters.
 - **No image automation.** The image-reflector and image-automation controllers
-  are not installed at all (`enable_image_automation = false` in
-  `modules/fluxcd`); discovering builds and writing them back to Git is the
-  feature to turn on if this side is ever to answer Kargo on its own terms.
+  are not installed on either cluster (`enable_image_automation = false` in
+  `modules/fluxcd`; not enabled in the AKS extension either); discovering builds
+  and writing them back to Git is the feature to turn on if this side is ever to
+  answer Kargo on its own terms.
 - **The repository is public and read-only to the clusters.** No credential is
   configured, and nothing here ever pushes.
