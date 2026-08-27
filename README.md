@@ -69,7 +69,7 @@ cluster and then gets out of the way:
 
 ```
 modules/fluxcd
-  ├── Helm release  flux2            the controllers
+  ├── Helm release  flux             the controllers (the flux2 chart)
   ├── ConfigMap     cluster-vars     the cluster's own facts (platform-contract.yaml)
   └── Helm release  flux-system      GitRepository → this repository
                                      Kustomization → ./clusters/<cloud>
@@ -142,9 +142,11 @@ It fails on:
   Closing it means `spec.serviceAccountName` on every Kustomization plus a
   tenant ServiceAccount with deploy rights in its own namespace, which the
   tenants stack does not grant today.
-- **No notifications.** `notification-controller` is installed but nothing
-  configures an `Alert` or a `Provider`, so a failed reconcile is visible only
-  to somebody running `flux get`.
+- **No notifications.** `notification-controller` is not installed
+  (`enable_notifications = false` in `modules/fluxcd`): without an `Alert` and
+  a `Provider` it reconciles nothing, so a failed reconcile is visible only to
+  somebody running `flux get` either way. Turning it on is the first thing to
+  do if this plane ever carries something that matters.
 - **No image automation.** The image-reflector and image-automation controllers
   are not installed at all (`enable_image_automation = false` in
   `modules/fluxcd`); discovering builds and writing them back to Git is the
