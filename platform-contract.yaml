@@ -1,0 +1,87 @@
+# The contract between this repository and the platform.
+#
+# Every Flux Kustomization here substitutes its manifests from two ConfigMaps
+# in flux-system. One of them is committed beside the cluster it belongs to
+# (hello2-release); the other is not committed at all — "cluster-vars" is
+# written into the cluster by Terraform when the cluster is built:
+#
+#   OneK8s  modules/fluxcd/main.tf  kubernetes_config_map "cluster_vars"
+#
+# The keys below are that half. They are the cluster's own facts, which is
+# exactly why they are not in Git: they differ per cluster and per environment,
+# while one copy of apps/hello2 serves all of them.
+#
+# This file is not read at reconcile time by anything. It exists so that the
+# contract is written down on the side that DEPENDS on it, and so CI can hold
+# both ends to it: pr-validation renders every application with the examples
+# below and fails on a variable nobody supplies — which would otherwise surface
+# only on the cluster, as a Kustomization stuck on
+# "variable substitution failed: variable not set: SECRET_KEY_PREFIX".
+#
+# Adding a variable is therefore a two-repository change, and deliberately so:
+# add it here with an example per cloud, and make modules/fluxcd write it.
+
+clusterVars:
+  CLOUD:
+    description: >-
+      Which cloud this cluster is. Shown on the application's page, used as a
+      label, and the first label of every host it publishes.
+    examples:
+      azure: azure
+      aws: aws
+
+  ENVIRONMENT:
+    description: >-
+      The environment its foundation was deployed for — the platform's own
+      axis (prototype, dev, staging, prod), not an application's stage.
+    examples:
+      azure: prototype
+      aws: prototype
+
+  TENANT:
+    description: >-
+      Tenant namespace the applications here are released into, created by the
+      tenants stack in the OneK8s repository. Flux never creates it: a
+      namespace with no quota, no NetworkPolicy and no SecretStore would defeat
+      the point of having onboarded a tenant.
+    examples:
+      azure: team-beta
+      aws: team-beta
+
+  DOMAIN:
+    description: >-
+      The wildcard the platform ingress serves. Hosts are one label deep under
+      it, which is all a *.<domain> certificate covers.
+    examples:
+      azure: onek8s.lol
+      aws: onek8s.lol
+
+  SECRET_KEY_PREFIX:
+    description: >-
+      How THIS cloud's secret backend spells the tenant's slice of it. The one
+      string on the platform that is not the same word everywhere: Key Vault
+      names are flat because each environment has its own vault, while Secrets
+      Manager is account-wide and a tenant's IAM role there is restricted to
+      "<environment>/<tenant>/*". Resolved by the platform and handed over
+      finished, so no manifest here branches on the cloud it landed on.
+    examples:
+      azure: team-beta-
+      aws: prototype/team-beta/
+
+  APPS_REPO_URL:
+    description: >-
+      The applications repository the charts come from. Separate from this one
+      on purpose: a developer changing a chart never touches the delivery
+      plane, and a change to the delivery plane never rebuilds an image.
+    examples:
+      azure: https://github.com/olljanat-ai/OneK8s-hello.git
+      aws: https://github.com/olljanat-ai/OneK8s-hello.git
+
+  APPS_BRANCH:
+    description: >-
+      Branch of that repository. Only a fetch hint — what is actually checked
+      out is the commit each application pins in its cluster's release
+      ConfigMap.
+    examples:
+      azure: main
+      aws: main

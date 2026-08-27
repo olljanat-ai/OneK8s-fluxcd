@@ -1,0 +1,17 @@
+# The hello2 application, once. Both clusters reconcile THIS directory — there
+# is no per-cloud overlay and no copy of it, because nothing here is per-cloud:
+# every value that differs between AKS and EKS arrives as a variable at
+# reconcile time (see the header of helmrelease.yaml).
+#
+# That is the whole trick of the Flux side of this comparison. Argo CD gets one
+# ApplicationSet whose generator fans one template out over clusters; Flux has
+# no fan-out, so each cluster's own Kustomization points at this same path and
+# substitutes its own values into it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# No "namespace:" here on purpose: the namespace is the tenant's, the tenant is
+# a platform fact, and it arrives as ${TENANT} like everything else.
+resources:
+  - gitrepository.yaml
+  - helmrelease.yaml

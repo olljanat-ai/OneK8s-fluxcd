@@ -1,0 +1,19 @@
+# Everything the aws cluster's Flux reconciles, and the only path its root
+# Kustomization points at. Terraform (modules/fluxcd, OneK8s) creates that root
+# Kustomization at "./clusters/aws" and nothing else — from here down the
+# cluster is Git.
+#
+# One directory per cluster, and no relationship between them: this is the
+# independent model. Neither cluster knows the other exists, neither is a spoke
+# of anything, and there is no cluster whose failure stops the other from
+# deploying — the trade being that "deploy this everywhere" is two commits
+# here, where the Argo CD hub makes it one.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # What this cluster runs. Read by the Kustomization below, so it is applied
+  # first in the same reconcile.
+  - hello2-release.yaml
+  # ...and the Kustomization that deploys it.
+  - hello2.yaml

@@ -1,0 +1,36 @@
+# What the azure cluster (AKS) runs of the hello2 application, and the file a
+# release is made in.
+#
+# This is the Flux side's answer to stages/hello/<stage>.yaml in the
+# OneK8s-argocd repository — with one deliberate difference, which is half the
+# reason both delivery planes are installed at all:
+#
+#   there   Kargo writes the file. A Warehouse turns each new build into
+#           Freight, staging takes it automatically, and production only takes
+#           what staging has already run, when a person says so. The gate is
+#           an engine's.
+#   here    a person writes the file, in a pull request. There is no Warehouse,
+#           no Freight and no promotion policy — Flux's image-automation
+#           controllers are not even installed (modules/fluxcd,
+#           enable_image_automation), so nothing discovers a new build for you.
+#           The gate is review.
+#
+# Both clusters start on the same build, and they stay independent: moving one
+# is an edit here and touches nothing else.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hello2-release
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/part-of: onek8s
+    app.kubernetes.io/name: hello2
+data:
+  # Commit of OneK8s-hello the chart is taken from. A full SHA, because that is
+  # what a GitRepository ref.commit takes, and because a branch name here would
+  # quietly re-deploy every chart change.
+  HELLO2_CHART_REVISION: "7eac6f6bb0d251981903b6d7114744285d35f6ae"
+  # The image, as one of the immutable "sha-<short>" tags the build workflow in
+  # OneK8s-hello publishes. No moving tag is published at all, which is what
+  # makes this line and the running container the same statement.
+  HELLO2_IMAGE_TAG: "sha-41a1c13"

@@ -1,0 +1,38 @@
+# Where the chart comes from: the applications repository, at one exact commit.
+#
+# Flux can pull a chart from a Helm repository, an OCI registry or — as here —
+# a Git repository, and Git is what makes this a like-for-like comparison with
+# the Argo CD side: both delivery planes deploy the SAME chart
+# (OneK8s-hello, apps/hello/chart), unchanged, from the same repository.
+#
+# The commit is pinned rather than tracked. ${HELLO2_CHART_REVISION} comes from
+# this cluster's own "hello2-release" ConfigMap (clusters/<cloud>/), so a chart
+# change reaches a cluster when somebody commits it there and not before — the
+# Flux counterpart of what Kargo writes into stages/hello/<stage>.yaml in
+# OneK8s-argocd. The difference, and the point of running both: there no engine
+# writes this file, so a "promotion" here is a pull request.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: hello2-chart
+  namespace: ${TENANT}
+  labels:
+    app.kubernetes.io/part-of: onek8s
+    app.kubernetes.io/name: hello2
+    onek8s.io/delivery-plane: fluxcd
+spec:
+  interval: 5m
+  url: ${APPS_REPO_URL}
+  ref:
+    # The branch is the hint that makes the clone cheap; the commit is what is
+    # actually checked out, and it wins over the branch head.
+    branch: ${APPS_BRANCH}
+    commit: ${HELLO2_CHART_REVISION}
+  # Only the chart is part of the artifact source-controller stores. Without
+  # this every application's source tree would be pulled into the cluster to
+  # get at one directory of it.
+  ignore: |
+    # exclude everything
+    /*
+    # ...except the chart this release deploys
+    !/apps/hello/chart/

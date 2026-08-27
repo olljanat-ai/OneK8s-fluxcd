@@ -1,0 +1,55 @@
+name: PR Validation
+
+# This repository is YAML that no CI ever applies: the clusters read it
+# themselves. A mistake here does not fail a pipeline — it stops one cluster
+# reconciling, silently, until somebody looks at "flux get kustomizations".
+#
+# So everything that can be checked without a cluster is checked here: the
+# overlays build, every ${VARIABLE} they use is one somebody actually supplies,
+# and the properties this repository exists to guarantee — one shared
+# application definition, one host per cluster, an immutable image — are
+# asserted against the rendered output rather than trusted to a reviewer.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  KUSTOMIZE_VERSION: "5.7.1"
+
+jobs:
+  render:
+    name: every cluster renders, fully substituted
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kustomize
+        run: |
+          curl -sSLo /tmp/kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          sudo tar -xzf /tmp/kustomize.tar.gz -C /usr/local/bin kustomize
+          kustomize version
+
+      # The check that catches the failure mode this design actually has.
+      #
+      # postBuild substitution is what lets both clusters share one copy of
+      # apps/hello2, and it is resolved on the cluster, at reconcile time, from
+      # ConfigMaps — half of which this repository does not even contain
+      # (cluster-vars is written by Terraform; platform-contract.yaml is the
+      # written-down version of it). A variable nobody supplies is therefore not
+      # a syntax error anywhere: it is a Kustomization that stops applying and a
+      # cluster that keeps serving whatever it served yesterday.
+      #
+      # Rendering every cluster's Kustomizations here with the contract's
+      # example values turns that into a failed pull request.
+      - name: Render
+        run: python3 .github/validate.py
