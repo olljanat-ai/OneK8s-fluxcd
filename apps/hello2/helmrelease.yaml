@@ -35,13 +35,27 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: hello2
-  namespace: ${TENANT}
+  # In Flux's namespace, with the workload placed in the tenant's below. Under
+  # the AKS extension's multi-tenancy a HelmRelease in the tenant's namespace
+  # would be refused outright — there is no applier ServiceAccount there — and
+  # its sourceRef would be crossing a namespace besides.
+  namespace: ${FLUX_NAMESPACE}
   labels:
     app.kubernetes.io/part-of: onek8s
     app.kubernetes.io/name: hello2
     onek8s.io/delivery-plane: fluxcd
 spec:
   interval: 10m
+  # WHERE the workload goes: the tenant's namespace, which the tenants stack
+  # created with its quota, NetworkPolicy and namespaced SecretStore. This is
+  # the line that keeps the application in team-beta while the objects that
+  # deploy it sit with Flux.
+  targetNamespace: ${TENANT}
+  # WHO deploys it. Azure's Flux extension creates this ServiceAccount and has
+  # its controllers impersonate it; modules/fluxcd creates one of the same name
+  # on the clouds that install Flux from the chart, so this one line means the
+  # same thing on either install instead of being an AKS-only manifest.
+  serviceAccountName: ${FLUX_APPLIER}
   # The Helm release name, and therefore the "instance" label on every object
   # the chart renders. "hello2" rather than "hello" so that a cluster running
   # both delivery planes shows two releases that cannot be mistaken for each

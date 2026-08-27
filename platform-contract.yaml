@@ -5,7 +5,7 @@
 # (hello2-release); the other is not committed at all — "cluster-vars" is
 # written into the cluster by Terraform when the cluster is built:
 #
-#   OneK8s  modules/fluxcd/main.tf  kubernetes_config_map "cluster_vars"
+#   OneK8s  modules/fluxcd-cluster-vars/main.tf  kubernetes_config_map_v1
 #
 # The keys below are that half. They are the cluster's own facts, which is
 # exactly why they are not in Git: they differ per cluster and per environment,
@@ -19,7 +19,10 @@
 # "variable substitution failed: variable not set: SECRET_KEY_PREFIX".
 #
 # Adding a variable is therefore a two-repository change, and deliberately so:
-# add it here with an example per cloud, and make modules/fluxcd write it.
+# add it here with an example per cloud, and make the platform write it —
+# modules/fluxcd-cluster-vars in OneK8s, which both installs of Flux call so
+# that the AKS extension and the community chart cannot end up with two
+# different contracts.
 
 clusterVars:
   CLOUD:
@@ -85,3 +88,27 @@ clusterVars:
     examples:
       azure: main
       aws: main
+
+  FLUX_NAMESPACE:
+    description: >-
+      Where Flux's own objects live, and therefore where every GitRepository,
+      Kustomization and HelmRelease in this repository has to be. That is not a
+      preference: the AKS Flux extension enforces Flux's multi-tenancy, under
+      which an application's Flux objects must sit in the namespace its
+      configuration does and no sourceRef may cross a namespace. The workload
+      goes to the tenant's namespace through a HelmRelease's targetNamespace.
+    examples:
+      azure: flux-system
+      aws: flux-system
+
+  FLUX_APPLIER:
+    description: >-
+      The ServiceAccount a Kustomization or HelmRelease here deploys as. On AKS
+      the Flux extension creates it and impersonates it; on the clouds that
+      install Flux from the community chart, modules/fluxcd creates one of the
+      same name so a manifest naming it means the same thing on either install.
+      The cluster overlays spell it out literally — nothing substitutes
+      variables into them — and CI checks the literal against this value.
+    examples:
+      azure: flux-applier
+      aws: flux-applier
