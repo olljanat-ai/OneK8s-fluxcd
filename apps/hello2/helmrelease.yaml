@@ -1,0 +1,105 @@
+# hello2: the hello application, delivered by Flux, for the Beta team.
+#
+# Deliberately the same chart the Argo CD side deploys for team-alpha, with the
+# same values contract and nothing forked. What differs is everything AROUND
+# the chart, which is what this repository exists to make visible:
+#
+#                      Argo CD (OneK8s-argocd)      Flux (here)
+#   what deploys it    Application, generated       HelmRelease, applied by
+#                      by an ApplicationSet on      the cluster's own
+#                      the hub                      kustomize-controller
+#   where it runs      one hub, spokes registered   nothing registered: each
+#                      as clusters                  cluster reconciles itself
+#   per-cluster values Helm parameters rendered     ${VARIABLES}, substituted
+#                      by the platform chart        at reconcile time
+#   what it runs       written by Kargo on          written by a person, in a
+#                      promotion                    pull request
+#
+# EVERY ${VARIABLE} below is resolved by the Kustomization that applies this
+# directory (clusters/<cloud>/hello2.yaml), from two ConfigMaps in flux-system:
+#
+#   cluster-vars     written by Terraform — modules/fluxcd in the OneK8s
+#                    repository. The cluster's own facts: which cloud it is,
+#                    which environment, which tenant, the wildcard domain and
+#                    how this cloud's secret backend spells a tenant's names.
+#                    They cannot be committed here: they differ per cluster and
+#                    per environment, and one copy of this file serves all of
+#                    them.
+#   hello2-release   committed here, next to the cluster it belongs to. What
+#                    this cluster runs: an image tag and a chart commit.
+#
+# platform-contract.yaml at the root of this repository lists the first set and
+# is what CI checks this file against, so a variable nobody supplies is a failed
+# pull request rather than a Kustomization stuck on "variable not set".
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: hello2
+  namespace: ${TENANT}
+  labels:
+    app.kubernetes.io/part-of: onek8s
+    app.kubernetes.io/name: hello2
+    onek8s.io/delivery-plane: fluxcd
+spec:
+  interval: 10m
+  # The Helm release name, and therefore the "instance" label on every object
+  # the chart renders. "hello2" rather than "hello" so that a cluster running
+  # both delivery planes shows two releases that cannot be mistaken for each
+  # other — the objects themselves are named by the chart and live in different
+  # tenants' namespaces.
+  releaseName: hello2
+  chart:
+    spec:
+      chart: apps/hello/chart
+      sourceRef:
+        kind: GitRepository
+        name: hello2-chart
+      # The chart is a directory in Git, not a versioned package, so its
+      # version does not move when its content does. "Revision" tells the
+      # helm-controller to upgrade when the SOURCE revision changes, which is
+      # what makes pinning a commit above mean anything.
+      reconcileStrategy: Revision
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+      # A failed upgrade rolls back to the release that was running. Nothing
+      # here is stateful, and a half-applied release that keeps serving the
+      # previous build is the better failure.
+      strategy: rollback
+  # The chart's own values.yaml documents every key below. Only the ones that
+  # are not the chart's default are set: this is the deployment's business, not
+  # a copy of the chart.
+  values:
+    cloud: ${CLOUD}
+    environment: ${ENVIRONMENT}
+    tenant: ${TENANT}
+    # Says which delivery plane put it there, on the page itself. Visiting
+    # <cloud>-hello.onek8s.lol and <cloud>-hello2.onek8s.lol side by side is
+    # the entire user interface of this comparison.
+    welcomeMessage: "Welcome to OneK8s on ${CLOUD} (${ENVIRONMENT}), delivered by Flux!"
+    image:
+      # Immutable build tag, pinned per cluster in hello2-release. The chart
+      # refuses to render without it rather than defaulting to a moving tag.
+      tag: ${HELLO2_IMAGE_TAG}
+    ingress:
+      # One label deep, which is all the *.onek8s.lol wildcard covers, and
+      # "hello2" so it sits beside the Argo CD-delivered "hello" instead of
+      # fighting it for a host. The A record is created out of band, like every
+      # other host on this platform.
+      host: ${CLOUD}-hello2.${DOMAIN}
+    secret:
+      # The secret this application displays. Its short name is the
+      # application's business and is committed here; how the cluster's backend
+      # spells the tenant's copy of it is the platform's, and arrives as
+      # ${SECRET_KEY_PREFIX} — "team-beta-" on Key Vault, but
+      # "prototype/team-beta/" on Secrets Manager, where a tenant's IAM role is
+      # scoped by ARN prefix.
+      name: test
+      remoteKey: ${SECRET_KEY_PREFIX}test
+      # The namespaced SecretStore modules/tenant-namespace creates for every
+      # tenant on every cloud. Flux does not create it and neither does the
+      # chart: tenant onboarding is Terraform's, on both delivery planes.
+      storeName: tenant-store

@@ -1,0 +1,49 @@
+# The azure cluster's copy of the hello2 application.
+#
+# It points at apps/hello2 — the same directory the other cluster's
+# Kustomization points at — and supplies the values that make it this
+# cluster's: postBuild substitution is Flux's answer to "one definition, many
+# clusters", and it is where the two ConfigMaps below meet.
+#
+#   cluster-vars     NOT in this repository. Written into flux-system by
+#                    Terraform (modules/fluxcd) when the cluster was built, so
+#                    the cloud, the environment, the tenant, the domain and the
+#                    secret-key prefix are the cluster's own answer rather than
+#                    something committed here per environment.
+#   hello2-release   in this repository, beside this file: the image tag and
+#                    the chart commit this cluster runs.
+#
+# Both are required. A missing key fails the Kustomization with the name of the
+# variable rather than deploying something half-substituted.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: hello2
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/part-of: onek8s
+    app.kubernetes.io/name: hello2
+spec:
+  interval: 5m
+  retryInterval: 1m
+  timeout: 5m
+  path: ./apps/hello2
+  # The root GitRepository Terraform created: this repository, at the branch
+  # the cluster was bootstrapped from.
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  # Garbage collection: an object dropped from apps/hello2 is deleted from the
+  # cluster rather than left behind, which is the same promise Argo CD's
+  # "prune: true" makes on the other side.
+  prune: true
+  # Report this Kustomization ready only once the HelmRelease it applies is
+  # ready, so "flux get kustomizations" answers the question people actually
+  # ask — is hello2 up — instead of only whether the YAML applied.
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
+      - kind: ConfigMap
+        name: hello2-release
